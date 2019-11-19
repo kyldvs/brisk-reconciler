@@ -15,69 +15,6 @@ let hooks_ident ~loc =
 let hooks_ident_pattern ~loc =
   Ast_builder.(ppat_var ~loc (Located.mk ~loc "brisk-hooks"))
 
-module JSX_ppx = struct
-  let rec props_filter_children ~acc = function
-    | [] ->
-        List.rev acc
-    | (AT.Labelled "children", P.([%expr []])) :: tail ->
-        props_filter_children ~acc tail
-    | (AT.Labelled "children", P.([%expr [%e? h] :: [%e? t]] as exp)) :: tail
-      ->
-        let loc = exp.P.pexp_loc in
-        let prop =
-          ( AT.Labelled "children"
-          , P.([%expr Brisk_reconciler.Expert.jsx_list ([%e h] :: [%e t])]) )
-        in
-        props_filter_children ~acc:(prop :: acc) tail
-    | prop :: tail ->
-        props_filter_children ~acc:(prop :: acc) tail
-
-  let props_filter_children props = props_filter_children ~acc:[] props
-
-  let rewrite_apply ~loc ~attributes:attrs props =
-    let args = props_filter_children props in
-    ATH.Exp.apply ~loc ~attrs (component_ident ~loc) args
-
-  let is_jsx ({AT.txt}, _) = String.equal txt "JSX"
-
-  let filter_jsx = List.filter is_jsx
-
-  let exists_jsx = List.exists is_jsx
-
-  let rec transform_createElement =
-    let open Longident in
-    function
-    | Ldot (head, "createElement") ->
-        Ldot (head, "make")
-    | Lapply (left, right) ->
-        Lapply (left, transform_createElement right)
-    | Lident _ as ident ->
-        ident
-    | Ldot _ as ldot ->
-        ldot
-
-  let expr expr =
-    match expr.P.pexp_desc with
-    | P.Pexp_apply (fn, args) when exists_jsx expr.pexp_attributes ->
-        let attributes = filter_jsx expr.pexp_attributes in
-        let args = List.map (fun (label, arg) -> (label, arg)) args in
-        let loc = expr.P.pexp_loc in
-        let fn =
-          match fn.P.pexp_desc with
-          | P.Pexp_ident {txt; loc} ->
-              let txt = transform_createElement txt in
-              {fn with pexp_desc= Pexp_ident {txt; loc}}
-          | _ ->
-              fn
-        in
-        P.(
-          [%expr
-            let [%p component_ident_pattern ~loc] = [%e fn] in
-            [%e rewrite_apply ~attributes ~loc:expr.P.pexp_loc args]])
-    | _ ->
-        expr
-end
-
 module Declaration_ppx = struct
   let func_pattern = Ppxlib.Ast_pattern.(pexp_fun __ __ __ __)
 
@@ -302,15 +239,6 @@ let declaration_mapper =
       Declaration_ppx.value_binding binding
   end
 
-let jsx_mapper =
-  object
-    inherit Ppxlib.Ast_traverse.map as super
-
-    method! expression e =
-      let e = super#expression e in
-      JSX_ppx.expr e
-  end
-
 let () =
   Ppxlib.Driver.register_transformation "component"
     ~impl:declaration_mapper#structure
@@ -318,4 +246,3 @@ let () =
       [ Declaration_ppx.register `Component
       ; Declaration_ppx.register `Native
       ; Hooks_ppx.extension ] ;
-  Ppxlib.Driver.register_transformation "JSX" ~impl:jsx_mapper#structure
